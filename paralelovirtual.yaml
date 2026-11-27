@@ -1,35 +1,64 @@
 blueprint:
   name: Paralelo Virtual
-  description: Acenda/Apaga todos os switchs/lights do grupo simultaneamente
+  description: >-
+    Acende/apaga todos os switches/lights do grupo simultaneamente. Ignora
+    mudanças vindas de unavailable/unknown (restart do HA, reconexão MQTT), para
+    não ligar luzes sozinho. Anti-eco por estado (idempotente): o eco de um
+    membro que já está no estado alvo não faz nada, sem janela de tempo.
   domain: automation
+  source_url: https://github.com/thiagoholder/BlueprintsHA/blob/main/paralelovirtual.yaml
+  homeassistant:
+    min_version: "2024.10.0"
   input:
     entrada_switchs:
       name: Escolha os pontos de Iluminação
       selector:
-            entity:
-              domain:
-                - switch
-                - light
-              multiple: true
-
-trigger:
-  platform: state
+        entity:
+          domain:
+          - switch
+          - light
+          multiple: true
+          reorder: false
+variables:
+  membros: !input entrada_switchs
+triggers:
+- trigger: state
   entity_id: !input entrada_switchs
-
-action:
-  - service: >
-      {% if trigger.to_state.state == "on" %}
-        homeassistant.turn_on
-      {% elif trigger.to_state.state == "off" %}
-        homeassistant.turn_off
-      {% endif %}
-    target:
-      entity_id:
-        !input entrada_switchs
-  - delay:
-      hours: 0
-      minutes: 0
-      seconds: 2
-      milliseconds: 0
-
-mode: single
+  not_from:
+  - unavailable
+  - unknown
+  to: 'on'
+  id: ligar
+- trigger: state
+  entity_id: !input entrada_switchs
+  not_from:
+  - unavailable
+  - unknown
+  to: 'off'
+  id: desligar
+actions:
+- alias: Anti-eco - só age se o gatilho ainda vale e algum membro disponível não está no estado alvo
+  condition: template
+  value_template: >-
+    {{ is_state(trigger.entity_id, trigger.to_state.state)
+       and (membros | select('has_value')
+                    | reject('is_state', trigger.to_state.state)
+                    | list | count > 0) }}
+- choose:
+  - conditions:
+    - condition: trigger
+      id: ligar
+    sequence:
+    - action: homeassistant.turn_on
+      target:
+        entity_id: !input entrada_switchs
+  - conditions:
+    - condition: trigger
+      id: desligar
+    sequence:
+    - action: homeassistant.turn_off
+      target:
+        entity_id: !input entrada_switchs
+mode: queued
+max: 5
+max_exceeded: silent
